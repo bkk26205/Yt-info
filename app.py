@@ -2,55 +2,80 @@ from flask import Flask, request, jsonify
 import yt_dlp
 import re
 from urllib.parse import urlparse, parse_qs
+import random
 
 app = Flask(__name__)
+
+# List of user agents to rotate
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+]
 
 def clean_text(text):
     """Clean and format text"""
     if not text:
         return ""
-    # Remove HTML tags
     clean = re.compile('<.*?>')
     text = re.sub(clean, '', text)
-    # Remove extra spaces and newlines
     text = ' '.join(text.split())
     return text
 
 def get_video_id(url):
     """Extract YouTube video ID from various URL formats"""
-    # Parse the URL
-    parsed_url = urlparse(url)
-    
-    # Handle different YouTube URL formats
-    if parsed_url.netloc in ['youtube.com', 'www.youtube.com']:
-        if parsed_url.path == '/watch':
-            return parse_qs(parsed_url.query).get('v', [None])[0]
-        elif parsed_url.path.startswith('/embed/'):
-            return parsed_url.path.split('/')[2]
-        elif parsed_url.path.startswith('/v/'):
-            return parsed_url.path.split('/')[2]
-        elif parsed_url.path.startswith('/shorts/'):
-            return parsed_url.path.split('/')[2]
-    
-    elif parsed_url.netloc == 'youtu.be':
-        return parsed_url.path[1:]
-    
-    return None
+    try:
+        parsed_url = urlparse(url)
+        
+        if parsed_url.netloc in ['youtube.com', 'www.youtube.com']:
+            if parsed_url.path == '/watch':
+                return parse_qs(parsed_url.query).get('v', [None])[0]
+            elif parsed_url.path.startswith('/embed/'):
+                return parsed_url.path.split('/')[2]
+            elif parsed_url.path.startswith('/v/'):
+                return parsed_url.path.split('/')[2]
+            elif parsed_url.path.startswith('/shorts/'):
+                return parsed_url.path.split('/')[2]
+        
+        elif parsed_url.netloc == 'youtu.be':
+            return parsed_url.path[1:].split('?')[0]  # Remove query parameters
+        
+        return None
+    except:
+        return None
 
 def get_youtube_info(video_url):
-    """Get complete information about a YouTube video"""
+    """Get complete information about a YouTube video with bot bypass"""
     try:
-        # Get video ID first
         video_id = get_video_id(video_url)
         if not video_id:
             return {'success': False, 'error': 'Invalid YouTube URL'}
         
+        # Updated yt-dlp options to avoid bot detection
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'forcejson': True,
             'noplaylist': True,
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            'http_headers': {
+                'User-Agent': random.choice(USER_AGENTS),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['android', 'web']
+                }
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -66,62 +91,72 @@ def get_youtube_info(video_url):
                         'resolution': fmt.get('resolution', 'audio'),
                         'filesize': fmt.get('filesize'),
                         'filesize_mb': round(fmt.get('filesize', 0) / (1024 * 1024), 2) if fmt.get('filesize') else None,
-                        'format_note': fmt.get('format_note'),
-                        'audio_codec': fmt.get('acodec'),
-                        'video_codec': fmt.get('vcodec'),
                     })
             
-            # Extract thumbnails (sorted by quality)
-            thumbnails = sorted(
-                info.get('thumbnails', []),
-                key=lambda x: x.get('width', 0) * x.get('height', 0),
-                reverse=True
-            )
-            
-            # Extract chapters if available
-            chapters = []
-            for chapter in info.get('chapters', []):
-                chapters.append({
-                    'start_time': chapter.get('start_time'),
-                    'end_time': chapter.get('end_time'),
-                    'title': chapter.get('title')
-                })
+            # Extract thumbnails
+            thumbnails = []
+            for thumb in info.get('thumbnails', []):
+                if thumb.get('url'):
+                    thumbnails.append({
+                        'url': thumb.get('url'),
+                        'width': thumb.get('width'),
+                        'height': thumb.get('height')
+                    })
             
             # Main video information
             video_info = {
                 'video_id': info.get('id'),
                 'title': info.get('title', ''),
-                'description': clean_text(info.get('description', ''))[:500] + '...' if info.get('description') else '',
+                'description': clean_text(info.get('description', ''))[:300] if info.get('description') else '',
                 'duration': info.get('duration', 0),
                 'duration_formatted': f"{info.get('duration', 0) // 60}:{info.get('duration', 0) % 60:02d}",
                 'upload_date': info.get('upload_date', ''),
-                'upload_date_formatted': f"{info.get('upload_date', '')[:4]}-{info.get('upload_date', '')[4:6]}-{info.get('upload_date', '')[6:8]}" if info.get('upload_date') else '',
                 'uploader': info.get('uploader', ''),
-                'uploader_id': info.get('uploader_id', ''),
-                'uploader_url': info.get('uploader_url', ''),
                 'channel': info.get('channel', ''),
-                'channel_id': info.get('channel_id', ''),
-                'channel_url': info.get('channel_url', ''),
                 'view_count': info.get('view_count', 0),
                 'like_count': info.get('like_count', 0),
-                'comment_count': info.get('comment_count', 0),
-                'average_rating': info.get('average_rating', 0),
-                'age_limit': info.get('age_limit', 0),
-                'categories': info.get('categories', []),
-                'tags': info.get('tags', [])[:10],
-                'thumbnails': thumbnails[:5],
-                'formats': formats[:10],
-                'chapters': chapters[:10],
+                'thumbnails': thumbnails[:3],
+                'formats': formats[:8],
                 'webpage_url': info.get('webpage_url', ''),
-                'original_url': video_url,
-                'is_live': info.get('is_live', False),
-                'was_live': info.get('was_live', False),
             }
             
             return {'success': True, 'data': video_info}
             
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        error_msg = str(e)
+        if "Sign in to confirm you're not a bot" in error_msg:
+            return {'success': False, 'error': 'YouTube bot detection triggered. Please try again later.'}
+        elif "Private video" in error_msg:
+            return {'success': False, 'error': 'This video is private and cannot be accessed.'}
+        elif "Video unavailable" in error_msg:
+            return {'success': False, 'error': 'Video is unavailable or has been removed.'}
+        else:
+            return {'success': False, 'error': f'Error: {error_msg}'}
+
+def get_basic_youtube_info(video_id):
+    """Alternative method using YouTube oEmbed API"""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        
+        response = requests.get(oembed_url, headers={
+            'User-Agent': random.choice(USER_AGENTS)
+        }, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                'success': True,
+                'data': {
+                    'video_id': video_id,
+                    'title': data.get('title', ''),
+                    'author_name': data.get('author_name', ''),
+                    'thumbnail_url': data.get('thumbnail_url', ''),
+                    'type': 'basic'
+                }
+            }
+        return {'success': False, 'error': 'Could not fetch basic info'}
+    except:
+        return {'success': False, 'error': 'Basic info fetch failed'}
 
 @app.route('/api/youtube/info', methods=['GET'])
 def youtube_info():
@@ -132,17 +167,20 @@ def youtube_info():
             "success": False,
             "error": "URL parameter is required",
             "example": "/api/youtube/info?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            "supported_urls": [
-                "https://www.youtube.com/watch?v=VIDEO_ID",
-                "https://youtu.be/VIDEO_ID", 
-                "https://www.youtube.com/shorts/VIDEO_ID",
-                "https://www.youtube.com/embed/VIDEO_ID"
-            ],
             "credit": "Made with ❤️ by @DIWANI_xD"
         }), 400
     
     try:
-        result = get_youtube_info(video_url)
+        # Clean the URL (remove tracking parameters)
+        clean_url = video_url.split('?')[0] if '?si=' in video_url else video_url
+        
+        result = get_youtube_info(clean_url)
+        
+        # If main method fails, try basic method
+        if not result['success']:
+            video_id = get_video_id(clean_url)
+            if video_id:
+                result = get_basic_youtube_info(video_id)
         
         if result['success']:
             return jsonify({
@@ -154,7 +192,7 @@ def youtube_info():
             return jsonify({
                 "success": False,
                 "error": result['error'],
-                "url": video_url,
+                "url": clean_url,
                 "credit": "Made with ❤️ by @DIWANI_xD"
             }), 400
             
@@ -166,78 +204,15 @@ def youtube_info():
             "credit": "Made with ❤️ by @DIWANI_xD"
         }), 500
 
-@app.route('/api/youtube/formats', methods=['GET'])
-def youtube_formats():
+@app.route('/api/youtube/basic', methods=['GET'])
+def youtube_basic():
+    """Basic info endpoint that works with oEmbed"""
     video_url = request.args.get('url')
     
     if not video_url:
         return jsonify({
             "success": False,
             "error": "URL parameter is required",
-            "example": "/api/youtube/formats?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            "credit": "Made with ❤️ by @DIWANI_xD"
-        }), 400
-    
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'forcejson': True,
-            'listformats': True,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            
-            formats = []
-            for fmt in info.get('formats', []):
-                if fmt.get('url'):
-                    formats.append({
-                        'format_id': fmt.get('format_id'),
-                        'extension': fmt.get('ext'),
-                        'resolution': fmt.get('resolution', 'audio'),
-                        'filesize': fmt.get('filesize'),
-                        'filesize_mb': round(fmt.get('filesize', 0) / (1024 * 1024), 2) if fmt.get('filesize') else None,
-                        'format_note': fmt.get('format_note'),
-                        'audio_codec': fmt.get('acodec'),
-                        'video_codec': fmt.get('vcodec'),
-                        'quality': fmt.get('quality'),
-                    })
-            
-            # Sort formats by resolution quality
-            formats.sort(key=lambda x: (
-                0 if 'audio' in str(x['resolution']) else 1,
-                x['filesize'] or 0
-            ), reverse=True)
-            
-            return jsonify({
-                "success": True,
-                "video_id": info.get('id'),
-                "title": info.get('title'),
-                "duration": info.get('duration'),
-                "formats": formats[:15],  # Limit to 15 formats
-                "credit": "Made with ❤️ by @DIWANI_xD"
-            })
-            
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "url": video_url,
-            "credit": "Made with ❤️ by @DIWANI_xD"
-        }), 500
-
-@app.route('/api/youtube/thumbnail', methods=['GET'])
-def youtube_thumbnail():
-    video_url = request.args.get('url')
-    quality = request.args.get('quality', 'maxres')
-    
-    if not video_url:
-        return jsonify({
-            "success": False,
-            "error": "URL parameter is required",
-            "example": "/api/youtube/thumbnail?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            "quality_options": ["maxres", "high", "medium", "default"],
             "credit": "Made with ❤️ by @DIWANI_xD"
         }), 400
     
@@ -250,52 +225,38 @@ def youtube_thumbnail():
                 "credit": "Made with ❤️ by @DIWANI_xD"
             }), 400
         
-        # YouTube thumbnail URLs pattern
-        qualities = {
-            'maxres': f'https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg',
-            'high': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg',
-            'medium': f'https://i.ytimg.com/vi/{video_id}/mqdefault.jpg',
-            'default': f'https://i.ytimg.com/vi/{video_id}/default.jpg',
-        }
+        result = get_basic_youtube_info(video_id)
         
-        thumbnail_url = qualities.get(quality, qualities['maxres'])
-        
-        return jsonify({
-            "success": True,
-            "video_id": video_id,
-            "thumbnail_url": thumbnail_url,
-            "quality": quality,
-            "all_qualities": qualities,
-            "credit": "Made with ❤️ by @DIWANI_xD"
-        })
+        if result['success']:
+            return jsonify({
+                "success": True,
+                "data": result['data'],
+                "credit": "Made with ❤️ by @DIWANI_xD"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result['error'],
+                "credit": "Made with ❤️ by @DIWANI_xD"
+            }), 400
             
     except Exception as e:
         return jsonify({
             "success": False,
             "error": str(e),
-            "url": video_url,
             "credit": "Made with ❤️ by @DIWANI_xD"
         }), 500
 
 @app.route('/')
 def home():
     return jsonify({
-        "message": "YouTube Information API",
-        "version": "1.0",
+        "message": "YouTube Information API - Fixed Version",
         "endpoints": {
             "video_info": "/api/youtube/info?url=YOUTUBE_URL",
-            "available_formats": "/api/youtube/formats?url=YOUTUBE_URL",
-            "thumbnails": "/api/youtube/thumbnail?url=YOUTUBE_URL&quality=maxres",
+            "basic_info": "/api/youtube/basic?url=YOUTUBE_URL",
             "example": "/api/youtube/info?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         },
-        "features": [
-            "Complete video information",
-            "Available formats & qualities", 
-            "Thumbnail URLs",
-            "Channel information",
-            "View/like/comment counts",
-            "Video metadata"
-        ],
+        "note": "Now with bot detection bypass and fallback methods",
         "credit": "Made with ❤️ by @DIWANI_xD"
     })
 
